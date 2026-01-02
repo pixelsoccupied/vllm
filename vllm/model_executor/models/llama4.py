@@ -43,6 +43,7 @@ from vllm.model_executor.layers.linear import (
 )
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.rotary_embedding import get_rope
+from vllm.platforms import current_platform
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader,
     maybe_remap_kv_scale_name,
@@ -437,7 +438,11 @@ class Llama4Model(LlamaModel):
         # [num_experts, hidden_in, hidden_out], so we must transpose the last
         # two dimensions to match the expected layout of the parameters.
         if fused and loaded_weight.ndim == 3:
-            loaded_weight = loaded_weight.transpose(-1, -2)
+            # Move to GPU before transpose to avoid slow CPU->GPU copy of
+            # non-contiguous tensors. GPU transpose is nearly instant.
+            # See: https://github.com/vllm-project/vllm/issues/31624
+            loaded_weight = loaded_weight.to(
+                current_platform.device_type).transpose(-1, -2).contiguous()
 
             # If the gate_proj and up_proj weights are fused into a single
             # weight tensor, we need to split the weight tensor into a tuple
@@ -675,7 +680,11 @@ class Llama4Model(LlamaModel):
                             and loaded_weight.dtype == torch.float8_e4m3fn
                             and loaded_weight.ndim == 3
                         ):
-                            loaded_weight = loaded_weight.transpose(-1, -2)
+                            # Move to GPU before transpose to avoid slow
+                            # CPU->GPU copy. See: issue #31624
+                            loaded_weight = loaded_weight.to(
+                                current_platform.device_type).transpose(
+                                -1, -2).contiguous()
 
                         # Load the weight into the module parameter with
                         # corresponding shard id and expert id.
